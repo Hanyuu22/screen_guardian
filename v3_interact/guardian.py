@@ -6,6 +6,11 @@ import subprocess, time, json, re, io, base64, hashlib, os, sys, logging, thread
 from datetime import datetime
 from pathlib import Path
 
+# ── 输入法环境变量（必须在 QApplication 之前设置） ────────
+os.environ.setdefault("QT_IM_MODULE", "ibus")
+os.environ.setdefault("XMODIFIERS",   "@im=ibus")
+os.environ.setdefault("GTK_IM_MODULE","ibus")
+
 import requests
 from PIL import Image
 
@@ -32,7 +37,6 @@ _spec.loader.exec_module(_mod)
 PopupWindow = _mod.PopupWindow
 
 from chat_window import ChatWindow
-from mini_window import MiniWindow
 
 # ── PyQt5 ─────────────────────────────────────────────
 from PyQt5.QtWidgets import QApplication
@@ -85,17 +89,18 @@ DETECT_PROMPT = """\
 # Signal 只传基本类型（str/int），复杂对象通过共享变量传递
 # ════════════════════════════════════════════════════
 class _Bridge(QObject):
-    trigger_popup  = pyqtSignal(str)        # token，对应 _pending 里的一条记录
-    update_status  = pyqtSignal(str, str)   # (status_key, task_text)
+    trigger_popup = pyqtSignal(str)   # token，对应 _pending 里的一条记录
 
-_bridge = _Bridge()
-_mini: "MiniWindow | None" = None          # 常驻小窗，主线程创建后赋值
-_pending: dict[str, dict] = {}        # token → {reason, suggestions, history}
-_open_windows: list = []              # 持有窗口引用，防止被 GC 回收
+_bridge  = _Bridge()
+_pending: dict[str, dict] = {}       # token → {reason, suggestions, history}
+_open_windows: list = []             # 持有弹窗引用，防止被 GC 回收
+_chat_win: "ChatWindow | None" = None  # 持久对话窗，主线程创建后赋值
 
-# ── 暂停标志：对话窗打开时暂停截图 ─────────────────────
-_chat_open = threading.Event()        # set = 对话窗打开中，监控暂停
-_last_alert_reset = threading.Event() # set = 对话窗关闭，要求重置冷却计时器
+# ── 退出标志 ──────────────────────────────────────────
+_stop_event = threading.Event()      # set = 通知监控线程退出
+
+# ── 冷却重置标志 ──────────────────────────────────────
+_last_alert_reset = threading.Event()
 
 # ── 持久化上下文 ──────────────────────────────────────
 CONTEXT_FILE = os.path.join(LOG_DIR, "context.json")
@@ -147,29 +152,11 @@ def _on_trigger_popup(token: str):
     def on_select(idx, text):
         log.info(f"[弹窗] 用户选择选项{idx+1}: {text}")
         first_msg = build_first_message(reason, text, suggestions)
-        win = ChatWindow(
-            history=history,
-            stuck_reason=reason,
-            selected_option=text,
-            suggestions=suggestions,
-            initial_message=first_msg,
-        )
-        win.show_with_initial()
-        _open_windows.append(win)
-        _chat_open.set()                              # 暂停监控
-        _bridge.update_status.emit("paused", "对话进行中")
-        log.info("[监控] 对话窗已打开，暂停截图")
-
-        def on_chat_closed():
-            if win in _open_windows:
-                _open_windows.remove(win)
-            save_context(history)                     # 保存上下文
-            _last_alert_reset.set()                   # 通知监控循环重置冷却计时器
-            _chat_open.clear()                        # 恢复监控
-            _bridge.update_status.emit("monitoring", "恢复监控")
-            log.info("[监控] 对话窗已关闭，恢复截图，冷却计时器将重置")
-
-        win.window_closed.connect(on_chat_closed)     # closeEvent 触发，不依赖 C++ 销毁
+        save_context(history)
+        _last_alert_reset.set()
+        if _chat_win:
+            _chat_win.inject_context(history, reason, text, first_msg)
+            log.info("[监控] 已注入上下文并弹出对话窗")
 
     def on_dismiss():
         log.info("[弹窗] 用户忽略")
@@ -180,12 +167,7 @@ def _on_trigger_popup(token: str):
     win.destroyed.connect(lambda: _open_windows.remove(win) if win in _open_windows else None)
 
 
-def _on_update_status(key: str, task: str):
-    if _mini:
-        _mini.set_status(key, task)
-
 _bridge.trigger_popup.connect(_on_trigger_popup)
-_bridge.update_status.connect(_on_update_status)
 
 
 # ════════════════════════════════════════════════════
@@ -264,28 +246,22 @@ def monitor_loop():
     log.info(f"截图间隔: {CHECK_INTERVAL}s  检测周期: 每{DETECT_EVERY}轮")
     log.info("=" * 55)
 
-    history  = load_context()           # 加载上次保留的上下文
+    history  = load_context()
     last_hash, last_alert, cycle = None, 0.0, 0
 
-    while True:
-        # ── 对话窗打开时暂停，每5秒检查一次是否恢复 ──
-        if _chat_open.is_set():
-            log.info("[监控] 暂停中（对话窗开着）...")
-            time.sleep(5)
-            continue
-
-        # ── 对话窗刚关闭：重置冷却计时器，从现在起重新计算 ──
+    while not _stop_event.is_set():
+        # ── 冷却重置 ──────────────────────────────────────
         if _last_alert_reset.is_set():
             _last_alert_reset.clear()
             last_alert = 0.0
-            log.info("[监控] 冷却计时器已重置（对话窗已关闭）")
+            log.info("[监控] 冷却计时器已重置")
 
         cycle += 1
         t0 = time.time()
         log.info(f"── 第 {cycle} 轮 ──────────────────────────")
 
         if not take_screenshot():
-            time.sleep(CHECK_INTERVAL)
+            _stop_event.wait(CHECK_INTERVAL)
             continue
 
         cur_hash = img_hash(WSL_READ_PATH)
@@ -303,7 +279,6 @@ def monitor_loop():
             if state.get("anomaly"):
                 log.info(f"  ⚠ {state['anomaly']}")
             history.append(state)
-            _bridge.update_status.emit("monitoring", f"[{state['app']}] {state['task']}")
 
         if len(history) > HISTORY_SIZE:
             history.pop(0)
@@ -322,7 +297,6 @@ def monitor_loop():
                     if stuck and conf >= STUCK_CONFIDENCE_THRESHOLD:
                         log.info("[!] 触发弹窗")
                         last_alert = now
-                        _bridge.update_status.emit("alert", result.get("reason", "检测到异常"))
                         token = _make_token()
                         _pending[token] = {
                             "reason":      result.get("reason", "检测到异常"),
@@ -331,7 +305,9 @@ def monitor_loop():
                         }
                         _bridge.trigger_popup.emit(token)
 
-        time.sleep(max(0, CHECK_INTERVAL - (time.time() - t0)))
+        _stop_event.wait(max(0, CHECK_INTERVAL - (time.time() - t0)))
+
+    log.info("[监控] 监控线程已退出")
 
 
 # ════════════════════════════════════════════════════
@@ -339,21 +315,25 @@ def monitor_loop():
 # ════════════════════════════════════════════════════
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    app.setQuitOnLastWindowClosed(False)   # 关闭弹窗不退出程序
+    app.setQuitOnLastWindowClosed(False)
 
-    _mini = MiniWindow()
-    _mini.show()
+    # ── 持久对话窗（最小化在任务栏）────────────────────
+    _chat_win = ChatWindow()
+    _chat_win.start()
 
+    # ── 监控后台线程 ──────────────────────────────────
     t = threading.Thread(target=monitor_loop, daemon=True)
     t.start()
 
-    # 让 Python 信号处理器能被触发：每 500ms 交还控制权一次
+    # ── Ctrl+C 正确退出 ───────────────────────────────
+    def _quit():
+        _stop_event.set()       # 通知监控线程退出
+        app.quit()
+
     _sigint_timer = QTimer()
     _sigint_timer.start(500)
     _sigint_timer.timeout.connect(lambda: None)
-
-    # Ctrl+C → app.quit() → exec_() 返回
-    signal.signal(signal.SIGINT, lambda *_: app.quit())
+    signal.signal(signal.SIGINT, lambda *_: _quit())
 
     log.info("Qt 主线程就绪，按 Ctrl+C 退出")
     sys.exit(app.exec_())

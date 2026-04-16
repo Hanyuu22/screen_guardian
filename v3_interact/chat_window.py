@@ -1,5 +1,6 @@
 """
-v3_interact / chat_window.py — PyQt5 多轮对话窗口
+v3_interact / chat_window.py — PyQt5 持久对话窗口
+启动时创建，最小化在任务栏；检测到问题时自动弹出并注入上下文。
 必须在主线程（QApplication 所在线程）调用 show()
 """
 import threading
@@ -12,7 +13,7 @@ from PyQt5.QtWidgets import (
     QTextEdit, QPushButton, QLabel, QFrame, QApplication,
 )
 from PyQt5.QtCore import Qt, pyqtSignal, QObject
-from PyQt5.QtGui import QFont, QTextCursor
+from PyQt5.QtGui import QFont
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "v1_loop"))
@@ -22,6 +23,12 @@ from config import API_KEY, API_BASE, PROXIES, TEXT_MODEL
 HEADERS = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
 FONT_FAMILY = "Microsoft YaHei"
 
+SYSTEM_PROMPT_DEFAULT = (
+    "你是 Screen Guardian，一个桌面助手。"
+    "你可以回答用户的任意问题，也会在检测到用户遇到困境时主动提供帮助。"
+)
+GREETING = "你好！我是 Screen Guardian。有什么可以帮你的吗？"
+
 
 class _Signals(QObject):
     append_msg   = pyqtSignal(str, str)  # (role, text)
@@ -30,13 +37,10 @@ class _Signals(QObject):
 
 
 class ChatWindow(QWidget):
-    # 窗口关闭时发出，guardian.py 监听此信号来恢复监控
-    window_closed = pyqtSignal()
 
-    def __init__(self, history, stuck_reason, selected_option, suggestions, initial_message):
+    def __init__(self):
         super().__init__()
-        self.system_prompt = build_system_prompt(history, stuck_reason, selected_option)
-        self.initial_message = initial_message
+        self.system_prompt = SYSTEM_PROMPT_DEFAULT
         self.messages = []
         self._sending = False
         self._sig = _Signals()
@@ -48,7 +52,7 @@ class ChatWindow(QWidget):
     def _build_ui(self):
         self.setWindowTitle("Screen Guardian")
         self.resize(580, 540)
-        self.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.Window)
+        self.setWindowFlags(Qt.Window)   # 普通窗口，可最小化到任务栏
 
         layout = QVBoxLayout(self)
         layout.setSpacing(0)
@@ -113,14 +117,35 @@ class ChatWindow(QWidget):
                   (screen.height() - self.height()) // 2)
 
     def closeEvent(self, event):
-        """用户点 X 关闭时发出 window_closed 信号"""
-        self.window_closed.emit()
-        super().closeEvent(event)
+        """点 X 时最小化到任务栏，不销毁窗口"""
+        event.ignore()
+        self.showMinimized()
 
-    def show_with_initial(self):
+    def start(self):
+        """启动时显示问候语，然后最小化"""
+        self._append_bubble("assistant", GREETING)
+        self.messages.append({"role": "assistant", "content": GREETING})
+        self.showMinimized()
+
+    def inject_context(self, history: list, stuck_reason: str,
+                       selected_option: str, initial_message: str):
+        """检测到问题且用户选择选项后，注入新上下文并弹到前台"""
+        self.system_prompt = build_system_prompt(history, stuck_reason, selected_option)
+        # 插入分隔线
+        self.chat_box.append(
+            '<hr style="border:none;border-top:1px solid #ddd;margin:8px 0;">')
+        self._append_bubble("assistant", initial_message)
+        self.messages.append({"role": "assistant", "content": initial_message})
+        self.bring_to_front()
+
+    def bring_to_front(self):
+        """从最小化恢复并置于最前"""
+        self.setWindowState(
+            (self.windowState() & ~Qt.WindowMinimized) | Qt.WindowActive
+        )
         self.show()
-        self._append_bubble("assistant", self.initial_message)
-        self.messages.append({"role": "assistant", "content": self.initial_message})
+        self.raise_()
+        self.activateWindow()
 
     def eventFilter(self, obj, event):
         from PyQt5.QtCore import QEvent
