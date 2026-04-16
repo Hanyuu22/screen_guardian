@@ -4,8 +4,6 @@
 
 > 版本更新记录见 [CHANGELOG.md](CHANGELOG.md)
 
-# TO DO
-  正在解决WSL GUI无法正确键入中文
   
 ## 功能
 
