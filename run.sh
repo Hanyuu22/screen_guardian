@@ -34,12 +34,21 @@ export GTK_IM_MODULE=ibus
 export QT_IM_MODULE=ibus
 export XMODIFIERS=@im=ibus
 
+# ── 确保 D-Bus session 可用（WSLg 下 dconf 需要） ────
+if [ -z "$DBUS_SESSION_BUS_ADDRESS" ]; then
+    eval $(/usr/bin/dbus-launch --sh-syntax 2>/dev/null)
+    export DBUS_SESSION_BUS_ADDRESS
+fi
+
 # ── 启动 ibus-daemon（若未运行） ─────────────────────
 if ! pgrep -x ibus-daemon > /dev/null; then
     echo "[Screen Guardian] 启动 ibus-daemon..."
     ibus-daemon -drx
     sleep 1
 fi
+
+# ── 切换到拼音引擎（每次重启 daemon 会重置为英文） ───
+ibus engine libpinyin 2>/dev/null || true
 
 # ── 确保日志目录存在 ──────────────────────────────────
 mkdir -p "$SCRIPT_DIR/logs"

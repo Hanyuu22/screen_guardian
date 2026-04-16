@@ -313,6 +313,10 @@ def monitor_loop():
 # 入口：Qt 主线程 + 监控后台线程
 # ════════════════════════════════════════════════════
 if __name__ == "__main__":
+    # 确保 ibus 使用拼音引擎（daemon 重启后会重置为英文键盘）
+    subprocess.run(["ibus", "engine", "libpinyin"],
+                   capture_output=True, timeout=3)
+
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
 
