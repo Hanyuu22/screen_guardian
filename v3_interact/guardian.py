@@ -324,10 +324,13 @@ if __name__ == "__main__":
     t = threading.Thread(target=monitor_loop, daemon=True)
     t.start()
 
-    # ── 信号处理：SIGINT(Ctrl+C) 和 SIGTERM(kill) 都正确退出 ──
+    # ── 统一退出函数 ──────────────────────────────────
     def _quit(*_):
         _stop_event.set()
         app.quit()
+
+    # 点 X 关闭对话窗 → 退出程序
+    _chat_win.quit_requested.connect(_quit)
 
     _sigint_timer = QTimer()
     _sigint_timer.start(500)

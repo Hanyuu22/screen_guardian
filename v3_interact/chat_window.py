@@ -37,6 +37,7 @@ class _Signals(QObject):
 
 
 class ChatWindow(QWidget):
+    quit_requested = pyqtSignal()   # 点 X 时发出，guardian.py 监听后退出程序
 
     def __init__(self):
         super().__init__()
@@ -117,9 +118,9 @@ class ChatWindow(QWidget):
                   (screen.height() - self.height()) // 2)
 
     def closeEvent(self, event):
-        """点 X 时最小化到任务栏，不销毁窗口"""
-        event.ignore()
-        self.showMinimized()
+        """点 X 时发出退出信号，由 guardian.py 负责结束程序"""
+        self.quit_requested.emit()
+        event.accept()
 
     def start(self):
         """启动时显示问候语，然后最小化"""
