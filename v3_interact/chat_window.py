@@ -1,14 +1,19 @@
 """
-v3_interact / chat_window.py — 带屏幕上下文的多轮对话窗口
-支持追问，关闭后主循环继续运行
+v3_interact / chat_window.py — PyQt5 多轮对话窗口
+带屏幕上下文，支持追问，关闭后主循环继续运行
 """
 import threading
-import tkinter as tk
-from tkinter import scrolledtext, font as tkfont
-from typing import Callable
-import requests
 import sys
+import requests
 from pathlib import Path
+
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QVBoxLayout, QHBoxLayout,
+    QTextEdit, QPushButton, QLabel, QFrame, QScrollArea,
+    QSizePolicy,
+)
+from PyQt5.QtCore import Qt, pyqtSignal, QObject
+from PyQt5.QtGui import QFont, QColor, QPalette, QTextCursor
 
 sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent / "v1_loop"))
@@ -16,159 +21,173 @@ from context_builder import build_system_prompt
 from config import API_KEY, API_BASE, PROXIES, TEXT_MODEL
 
 HEADERS = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
+FONT_FAMILY = "Microsoft YaHei"
+
+_qt_app = None
+_qt_lock = threading.Lock()
 
 
-class ChatWindow:
-    """多轮对话窗口"""
+def _get_app():
+    global _qt_app
+    with _qt_lock:
+        if _qt_app is None:
+            _qt_app = QApplication.instance() or QApplication(sys.argv)
+    return _qt_app
 
-    def __init__(
-        self,
-        history: list[dict],
-        stuck_reason: str,
-        selected_option: str | None,
-        suggestions: list[str],
-        initial_message: str,
-    ):
-        self.messages: list[dict] = []  # 对话历史（不含 system）
+
+class _Signals(QObject):
+    append_msg = pyqtSignal(str, str)   # (role, text)
+    set_thinking = pyqtSignal(bool)
+    enable_send = pyqtSignal(bool)
+
+
+class ChatWindow(QWidget):
+    def __init__(self, history, stuck_reason, selected_option, suggestions, initial_message):
+        app = _get_app()
+        super().__init__()
         self.system_prompt = build_system_prompt(history, stuck_reason, selected_option)
         self.initial_message = initial_message
-        self.suggestions = suggestions
+        self.messages = []
         self._sending = False
+        self._signals = _Signals()
+        self._signals.append_msg.connect(self._on_append_msg)
+        self._signals.set_thinking.connect(self._on_set_thinking)
+        self._signals.enable_send.connect(self._on_enable_send)
+        self._build_ui()
 
-    def open(self):
-        t = threading.Thread(target=self._run, daemon=True)
-        t.start()
+    def _build_ui(self):
+        self.setWindowTitle("Screen Guardian — 帮助对话")
+        self.resize(580, 540)
+        self.setWindowFlags(Qt.WindowStaysOnTopHint)
 
-    def _run(self):
-        root = tk.Tk()
-        root.title("Screen Guardian — 帮助对话")
-        root.geometry("560x520")
-        root.resizable(True, True)
-        root.attributes("-topmost", True)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(0)
+        layout.setContentsMargins(0, 0, 0, 0)
 
-        # 窗口居中
-        root.update_idletasks()
-        sw, sh = root.winfo_screenwidth(), root.winfo_screenheight()
-        root.geometry(f"560x520+{(sw-560)//2}+{(sh-560)//2}")
+        # 标题栏
+        title_bar = QFrame()
+        title_bar.setStyleSheet("background-color: #2c3e50;")
+        title_bar.setFixedHeight(44)
+        title_layout = QHBoxLayout(title_bar)
+        title_label = QLabel("  Screen Guardian — 帮助对话")
+        title_label.setFont(QFont(FONT_FAMILY, 11, QFont.Bold))
+        title_label.setStyleSheet("color: white; background: transparent;")
+        title_layout.addWidget(title_label)
+        layout.addWidget(title_bar)
 
-        title_font = tkfont.Font(family="Microsoft YaHei", size=11, weight="bold")
-        msg_font   = tkfont.Font(family="Microsoft YaHei", size=9)
-        input_font = tkfont.Font(family="Microsoft YaHei", size=10)
+        # 对话区
+        self.chat_box = QTextEdit()
+        self.chat_box.setReadOnly(True)
+        self.chat_box.setFont(QFont(FONT_FAMILY, 10))
+        self.chat_box.setStyleSheet("""
+            QTextEdit {
+                background: #f9f9f9;
+                border: none;
+                padding: 8px;
+            }
+        """)
+        layout.addWidget(self.chat_box, stretch=1)
 
-        # ── 标题 ──────────────────────────────────────
-        tk.Frame(root, bg="#2c3e50", height=40).pack(fill="x")
-        # Re-place label on top of frame trick via pack order
-        root.children[list(root.children)[-1]].pack_forget()
+        # 思考中提示
+        self.thinking_label = QLabel("  助手正在思考...")
+        self.thinking_label.setFont(QFont(FONT_FAMILY, 9))
+        self.thinking_label.setStyleSheet("color: #95a5a6; padding: 4px 8px;")
+        self.thinking_label.hide()
+        layout.addWidget(self.thinking_label)
 
-        header = tk.Frame(root, bg="#2c3e50", height=40)
-        header.pack(fill="x")
-        header.pack_propagate(False)
-        tk.Label(header, text="  Screen Guardian — 帮助对话",
-                 bg="#2c3e50", fg="white", font=title_font, anchor="w"
-                 ).pack(fill="both", expand=True, padx=8)
+        # 输入区
+        input_frame = QFrame()
+        input_frame.setStyleSheet("background: white; border-top: 1px solid #ddd;")
+        input_layout = QHBoxLayout(input_frame)
+        input_layout.setContentsMargins(8, 8, 8, 8)
+        input_layout.setSpacing(8)
 
-        # ── 对话区 ────────────────────────────────────
-        chat_frame = tk.Frame(root, bg="white")
-        chat_frame.pack(fill="both", expand=True, padx=8, pady=(8, 4))
+        self.input_box = QTextEdit()
+        self.input_box.setFont(QFont(FONT_FAMILY, 10))
+        self.input_box.setFixedHeight(72)
+        self.input_box.setPlaceholderText("输入问题，Enter 发送，Shift+Enter 换行...")
+        self.input_box.setStyleSheet("""
+            QTextEdit {
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                padding: 6px;
+            }
+        """)
+        self.input_box.installEventFilter(self)
+        input_layout.addWidget(self.input_box, stretch=1)
 
-        self.chat_box = scrolledtext.ScrolledText(
-            chat_frame, wrap=tk.WORD, state="disabled",
-            font=msg_font, bg="#f9f9f9", relief="flat",
-            padx=8, pady=8,
-        )
-        self.chat_box.pack(fill="both", expand=True)
+        self.send_btn = QPushButton("发送\n(Enter)")
+        self.send_btn.setFont(QFont(FONT_FAMILY, 9))
+        self.send_btn.setFixedSize(72, 72)
+        self.send_btn.setStyleSheet("""
+            QPushButton {
+                background: #3498db; color: white;
+                border: none; border-radius: 4px;
+            }
+            QPushButton:hover { background: #2980b9; }
+            QPushButton:disabled { background: #bdc3c7; }
+        """)
+        self.send_btn.clicked.connect(self._send)
+        input_layout.addWidget(self.send_btn)
 
-        # 文字颜色标签
-        self.chat_box.tag_config("ai_name",   foreground="#2980b9", font=(msg_font.actual()["family"], 9, "bold"))
-        self.chat_box.tag_config("ai_text",   foreground="#2c3e50")
-        self.chat_box.tag_config("user_name", foreground="#27ae60", font=(msg_font.actual()["family"], 9, "bold"))
-        self.chat_box.tag_config("user_text", foreground="#2c3e50")
-        self.chat_box.tag_config("thinking",  foreground="#95a5a6", font=(msg_font.actual()["family"], 8, "italic"))
+        layout.addWidget(input_frame)
 
-        # ── 输入区 ────────────────────────────────────
-        input_frame = tk.Frame(root, bg="white", pady=4)
-        input_frame.pack(fill="x", padx=8, pady=(0, 8))
+        # 居中显示
+        screen = QApplication.primaryScreen().geometry()
+        self.move((screen.width() - self.width()) // 2, (screen.height() - self.height()) // 2)
 
-        self.input_box = tk.Text(
-            input_frame, height=3, font=input_font,
-            relief="solid", bd=1, padx=6, pady=4,
-            wrap=tk.WORD,
-        )
-        self.input_box.pack(side="left", fill="both", expand=True)
-        self.input_box.bind("<Return>", self._on_enter)
-        self.input_box.bind("<Shift-Return>", lambda e: None)  # Shift+Enter 换行
+    def eventFilter(self, obj, event):
+        from PyQt5.QtCore import QEvent
+        from PyQt5.QtGui import QKeyEvent
+        if obj is self.input_box and event.type() == QEvent.KeyPress:
+            key_event = QKeyEvent(event)
+            if key_event.key() == Qt.Key_Return and not (key_event.modifiers() & Qt.ShiftModifier):
+                self._send()
+                return True
+        return super().eventFilter(obj, event)
 
-        send_btn = tk.Button(
-            input_frame,
-            text="发送\n(Enter)",
-            font=tkfont.Font(family="Microsoft YaHei", size=9),
-            bg="#3498db", fg="white",
-            activebackground="#2980b9", activeforeground="white",
-            relief="flat", padx=8,
-            cursor="hand2",
-            command=self._send,
-        )
-        send_btn.pack(side="right", fill="y", padx=(6, 0))
-        self.send_btn = send_btn
+    def _append_bubble(self, role: str, text: str):
+        cursor = self.chat_box.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        self.chat_box.setTextCursor(cursor)
 
-        self.root = root
+        if role == "assistant":
+            name_color = "#2980b9"
+            name = "助手"
+        else:
+            name_color = "#27ae60"
+            name = "你"
 
-        # 显示 AI 初始消息
-        self._append_ai(self.initial_message)
-        self.messages.append({"role": "assistant", "content": self.initial_message})
+        self.chat_box.append(f'<span style="color:{name_color};font-weight:bold;">{name}</span>')
+        self.chat_box.append(f'<span style="color:#2c3e50;">{text.replace(chr(10), "<br>")}</span>')
+        self.chat_box.append("")
+        self.chat_box.verticalScrollBar().setValue(self.chat_box.verticalScrollBar().maximum())
 
-        root.mainloop()
+    def _on_append_msg(self, role: str, text: str):
+        self._append_bubble(role, text)
 
-    def _append_ai(self, text: str):
-        self.chat_box.config(state="normal")
-        self.chat_box.insert(tk.END, "助手  ", "ai_name")
-        self.chat_box.insert(tk.END, text + "\n\n", "ai_text")
-        self.chat_box.config(state="disabled")
-        self.chat_box.see(tk.END)
+    def _on_set_thinking(self, visible: bool):
+        if visible:
+            self.thinking_label.show()
+        else:
+            self.thinking_label.hide()
 
-    def _append_user(self, text: str):
-        self.chat_box.config(state="normal")
-        self.chat_box.insert(tk.END, "你  ", "user_name")
-        self.chat_box.insert(tk.END, text + "\n\n", "user_text")
-        self.chat_box.config(state="disabled")
-        self.chat_box.see(tk.END)
-
-    def _append_thinking(self):
-        self.chat_box.config(state="normal")
-        self.chat_box.insert(tk.END, "助手正在思考...\n", "thinking")
-        self.chat_box.config(state="disabled")
-        self.chat_box.see(tk.END)
-
-    def _remove_thinking(self):
-        """删除最后一行"助手正在思考..."行"""
-        self.chat_box.config(state="normal")
-        end_idx = self.chat_box.index(tk.END)
-        # 向前找 "thinking" 标签的最后位置
-        start = self.chat_box.search("助手正在思考...", "1.0", backwards=True, stopindex=tk.END)
-        if start:
-            line_end = self.chat_box.index(f"{start} lineend+1c")
-            self.chat_box.delete(start, line_end)
-        self.chat_box.config(state="disabled")
-
-    def _on_enter(self, event):
-        if not event.state & 0x1:  # 没按 Shift
-            self._send()
-            return "break"
+    def _on_enable_send(self, enabled: bool):
+        self.send_btn.setEnabled(enabled)
+        self._sending = not enabled
 
     def _send(self):
         if self._sending:
             return
-        text = self.input_box.get("1.0", tk.END).strip()
+        text = self.input_box.toPlainText().strip()
         if not text:
             return
-
-        self.input_box.delete("1.0", tk.END)
-        self._append_user(text)
+        self.input_box.clear()
+        self._signals.append_msg.emit("user", text)
         self.messages.append({"role": "user", "content": text})
         self._sending = True
-        self.send_btn.config(state="disabled")
-        self._append_thinking()
-
+        self._signals.enable_send.emit(False)
+        self._signals.set_thinking.emit(True)
         threading.Thread(target=self._call_llm, daemon=True).start()
 
     def _call_llm(self):
@@ -189,34 +208,26 @@ class ChatWindow:
         except Exception as e:
             reply = f"请求失败：{e}"
 
-        # 回到主线程更新 UI
-        self.root.after(0, self._on_reply, reply)
+        self._signals.set_thinking.emit(False)
+        self._signals.append_msg.emit("assistant", reply)
+        self._signals.enable_send.emit(True)
 
-    def _on_reply(self, reply: str):
-        self._remove_thinking()
-        self._append_ai(reply)
-        self._sending = False
-        self.send_btn.config(state="normal")
-        self.input_box.focus_set()
+    def show_with_initial(self):
+        self.show()
+        self._append_bubble("assistant", self.initial_message)
+        self.messages.append({"role": "assistant", "content": self.initial_message})
 
 
-def open_chat(
-    history: list[dict],
-    stuck_reason: str,
-    selected_option: str | None,
-    suggestions: list[str],
-    initial_message: str,
-) -> ChatWindow:
-    """对外接口：打开对话窗口并返回实例"""
-    win = ChatWindow(
-        history=history,
-        stuck_reason=stuck_reason,
-        selected_option=selected_option,
-        suggestions=suggestions,
-        initial_message=initial_message,
-    )
-    win.open()
-    return win
+def open_chat(history, stuck_reason, selected_option, suggestions, initial_message) -> "ChatWindow":
+    def _run():
+        app = _get_app()
+        win = ChatWindow(history, stuck_reason, selected_option, suggestions, initial_message)
+        win.show_with_initial()
+        app.exec_()
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+    return t
 
 
 # ── 独立测试 ──────────────────────────────────────────
@@ -224,29 +235,15 @@ if __name__ == "__main__":
     import time
 
     mock_history = [
-        {"app": "Terminal", "task": "运行 pip install torch", "status": "loading", "anomaly": None},
-        {"app": "Terminal", "task": "pip install 进度条卡在47%", "status": "loading", "anomaly": "下载进度长时间无变化"},
-        {"app": "Terminal", "task": "pip install 进度条仍卡在47%", "status": "loading", "anomaly": "进度条卡住超过1分钟"},
+        {"app": "Terminal", "task": "pip install torch", "status": "loading", "anomaly": None},
+        {"app": "Terminal", "task": "pip 卡在47%", "status": "loading", "anomaly": "进度条长时间无变化"},
     ]
-
-    win = open_chat(
+    open_chat(
         history=mock_history,
-        stuck_reason="pip install torch 进度条卡在47%超过2分钟",
-        selected_option="改用国内镜像源重新安装",
-        suggestions=[
-            "pip install torch -i https://pypi.tuna.tsinghua.edu.cn/simple/",
-            "检查网络代理配置",
-            "用 conda install pytorch 替代",
-        ],
-        initial_message=(
-            "我注意到你的 pip 安装进度卡住了，这通常是网络问题导致的。\n\n"
-            "你选择了使用国内镜像源，这是个好方法。\n\n"
-            "请先按 Ctrl+C 终止当前安装，然后运行：\n\n"
-            "pip install torch -i https://pypi.tuna.tsinghua.edu.cn/simple/\n\n"
-            "有什么其他问题可以告诉我。"
-        ),
+        stuck_reason="pip install 卡住",
+        selected_option="改用国内镜像",
+        suggestions=["pip install torch -i https://pypi.tuna.tsinghua.edu.cn/simple/", "检查代理", "用conda替代"],
+        initial_message="我注意到 pip 安装卡住了。\n\n先按 Ctrl+C 取消，然后运行：\npip install torch -i https://pypi.tuna.tsinghua.edu.cn/simple/",
     )
-
-    print("对话窗口已打开，主线程继续运行...")
-    time.sleep(60)
-    print("测试结束")
+    print("主线程继续...")
+    time.sleep(30)
