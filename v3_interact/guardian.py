@@ -92,6 +92,7 @@ _open_windows: list = []              # 持有窗口引用，防止被 GC 回收
 
 # ── 暂停标志：对话窗打开时暂停截图 ─────────────────────
 _chat_open = threading.Event()        # set = 对话窗打开中，监控暂停
+_last_alert_reset = threading.Event() # set = 对话窗关闭，要求重置冷却计时器
 
 # ── 持久化上下文 ──────────────────────────────────────
 CONTEXT_FILE = os.path.join(LOG_DIR, "context.json")
@@ -159,8 +160,9 @@ def _on_trigger_popup(token: str):
             if win in _open_windows:
                 _open_windows.remove(win)
             save_context(history)                     # 保存上下文
+            _last_alert_reset.set()                   # 通知监控循环重置冷却计时器
             _chat_open.clear()                        # 恢复监控
-            log.info("[监控] 对话窗已关闭，恢复截图")
+            log.info("[监控] 对话窗已关闭，恢复截图，冷却计时器将重置")
 
         win.window_closed.connect(on_chat_closed)     # closeEvent 触发，不依赖 C++ 销毁
 
@@ -261,6 +263,12 @@ def monitor_loop():
             log.info("[监控] 暂停中（对话窗开着）...")
             time.sleep(5)
             continue
+
+        # ── 对话窗刚关闭：重置冷却计时器，从现在起重新计算 ──
+        if _last_alert_reset.is_set():
+            _last_alert_reset.clear()
+            last_alert = 0.0
+            log.info("[监控] 冷却计时器已重置（对话窗已关闭）")
 
         cycle += 1
         t0 = time.time()
