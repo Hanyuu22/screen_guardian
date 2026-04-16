@@ -325,15 +325,16 @@ if __name__ == "__main__":
     t = threading.Thread(target=monitor_loop, daemon=True)
     t.start()
 
-    # ── Ctrl+C 正确退出 ───────────────────────────────
-    def _quit():
-        _stop_event.set()       # 通知监控线程退出
+    # ── 信号处理：SIGINT(Ctrl+C) 和 SIGTERM(kill) 都正确退出 ──
+    def _quit(*_):
+        _stop_event.set()
         app.quit()
 
     _sigint_timer = QTimer()
     _sigint_timer.start(500)
     _sigint_timer.timeout.connect(lambda: None)
-    signal.signal(signal.SIGINT, lambda *_: _quit())
+    signal.signal(signal.SIGINT,  _quit)
+    signal.signal(signal.SIGTERM, _quit)
 
     log.info("Qt 主线程就绪，按 Ctrl+C 退出")
     sys.exit(app.exec_())

@@ -11,7 +11,7 @@ fi
 
 PID=$(cat "$PID_FILE")
 if kill -0 "$PID" 2>/dev/null; then
-    kill "$PID"
+    kill -SIGINT "$PID"
     rm -f "$PID_FILE"
     echo "[Screen Guardian] 已停止（PID $PID）。"
 else
