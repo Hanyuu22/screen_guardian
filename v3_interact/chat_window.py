@@ -30,6 +30,9 @@ class _Signals(QObject):
 
 
 class ChatWindow(QWidget):
+    # 窗口关闭时发出，guardian.py 监听此信号来恢复监控
+    window_closed = pyqtSignal()
+
     def __init__(self, history, stuck_reason, selected_option, suggestions, initial_message):
         super().__init__()
         self.system_prompt = build_system_prompt(history, stuck_reason, selected_option)
@@ -108,6 +111,11 @@ class ChatWindow(QWidget):
         screen = QApplication.primaryScreen().geometry()
         self.move((screen.width() - self.width()) // 2,
                   (screen.height() - self.height()) // 2)
+
+    def closeEvent(self, event):
+        """用户点 X 关闭时发出 window_closed 信号"""
+        self.window_closed.emit()
+        super().closeEvent(event)
 
     def show_with_initial(self):
         self.show()

@@ -162,7 +162,7 @@ def _on_trigger_popup(token: str):
             _chat_open.clear()                        # 恢复监控
             log.info("[监控] 对话窗已关闭，恢复截图")
 
-        win.destroyed.connect(on_chat_closed)
+        win.window_closed.connect(on_chat_closed)     # closeEvent 触发，不依赖 C++ 销毁
 
     def on_dismiss():
         log.info("[弹窗] 用户忽略")
