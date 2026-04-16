@@ -4,6 +4,9 @@
 
 > 版本更新记录见 [CHANGELOG.md](CHANGELOG.md)
 
+# TO DO
+  正在解决WSL GUI无法正确键入中文
+  
 ## 功能
 
 - 每 20 秒截取屏幕，用 `qwen-vl-plus` 分析当前状态
