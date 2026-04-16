@@ -90,6 +90,41 @@ _bridge = _Bridge()
 _pending: dict[str, dict] = {}        # token → {reason, suggestions, history}
 _open_windows: list = []              # 持有窗口引用，防止被 GC 回收
 
+# ── 暂停标志：对话窗打开时暂停截图 ─────────────────────
+_chat_open = threading.Event()        # set = 对话窗打开中，监控暂停
+
+# ── 持久化上下文 ──────────────────────────────────────
+CONTEXT_FILE = os.path.join(LOG_DIR, "context.json")
+
+
+def load_context() -> list:
+    """启动时从文件加载上一次保留的 history 摘要"""
+    try:
+        with open(CONTEXT_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        entries = data.get("history", [])[-HISTORY_SIZE:]
+        log.info(f"[上下文] 加载 {len(entries)} 条历史记录（上次保存于 {data.get('saved_at','')}）")
+        return entries
+    except FileNotFoundError:
+        return []
+    except Exception as e:
+        log.warning(f"[上下文] 加载失败: {e}")
+        return []
+
+
+def save_context(history: list) -> None:
+    """对话窗关闭时保存当前 history 到文件"""
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        with open(CONTEXT_FILE, "w", encoding="utf-8") as f:
+            json.dump({
+                "saved_at": datetime.now().isoformat(),
+                "history": history,
+            }, f, ensure_ascii=False, indent=2)
+        log.info(f"[上下文] 已保存 {len(history)} 条记录")
+    except Exception as e:
+        log.warning(f"[上下文] 保存失败: {e}")
+
 
 def _make_token() -> str:
     import uuid
@@ -108,7 +143,6 @@ def _on_trigger_popup(token: str):
     def on_select(idx, text):
         log.info(f"[弹窗] 用户选择选项{idx+1}: {text}")
         first_msg = build_first_message(reason, text, suggestions)
-        # 直接在主线程创建对话窗（on_select 本身由主线程的 Qt 事件调用）
         win = ChatWindow(
             history=history,
             stuck_reason=reason,
@@ -118,7 +152,17 @@ def _on_trigger_popup(token: str):
         )
         win.show_with_initial()
         _open_windows.append(win)
-        win.destroyed.connect(lambda: _open_windows.remove(win) if win in _open_windows else None)
+        _chat_open.set()                              # 暂停监控
+        log.info("[监控] 对话窗已打开，暂停截图")
+
+        def on_chat_closed():
+            if win in _open_windows:
+                _open_windows.remove(win)
+            save_context(history)                     # 保存上下文
+            _chat_open.clear()                        # 恢复监控
+            log.info("[监控] 对话窗已关闭，恢复截图")
+
+        win.destroyed.connect(on_chat_closed)
 
     def on_dismiss():
         log.info("[弹窗] 用户忽略")
@@ -208,9 +252,16 @@ def monitor_loop():
     log.info(f"截图间隔: {CHECK_INTERVAL}s  检测周期: 每{DETECT_EVERY}轮")
     log.info("=" * 55)
 
-    history, last_hash, last_alert, cycle = [], None, 0.0, 0
+    history  = load_context()           # 加载上次保留的上下文
+    last_hash, last_alert, cycle = None, 0.0, 0
 
     while True:
+        # ── 对话窗打开时暂停，每5秒检查一次是否恢复 ──
+        if _chat_open.is_set():
+            log.info("[监控] 暂停中（对话窗开着）...")
+            time.sleep(5)
+            continue
+
         cycle += 1
         t0 = time.time()
         log.info(f"── 第 {cycle} 轮 ──────────────────────────")

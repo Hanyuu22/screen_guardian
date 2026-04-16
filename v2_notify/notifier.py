@@ -24,7 +24,7 @@ class PopupWindow(QWidget):
         self._build_ui(reason, suggestions)
 
     def _build_ui(self, reason, suggestions):
-        self.setWindowTitle("Screen Guardian")
+        self.setWindowTitle("Screen Guardian - Alert")
         self.setFixedWidth(500)
         self.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.Window)
         self.setAttribute(Qt.WA_DeleteOnClose)

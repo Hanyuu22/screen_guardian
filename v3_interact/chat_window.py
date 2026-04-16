@@ -43,7 +43,7 @@ class ChatWindow(QWidget):
         self._build_ui()
 
     def _build_ui(self):
-        self.setWindowTitle("Screen Guardian — 帮助对话")
+        self.setWindowTitle("Screen Guardian")
         self.resize(580, 540)
         self.setWindowFlags(Qt.WindowStaysOnTopHint | Qt.Window)
 
