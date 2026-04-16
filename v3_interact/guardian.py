@@ -2,7 +2,7 @@
 v3_interact / guardian.py — 完整版
 架构：QApplication 在主线程 → 监控循环在后台线程 → Signal 触发 UI
 """
-import subprocess, time, json, re, io, base64, hashlib, os, sys, logging, threading
+import subprocess, time, json, re, io, base64, hashlib, os, sys, logging, threading, signal
 from datetime import datetime
 from pathlib import Path
 
@@ -35,7 +35,7 @@ from chat_window import ChatWindow
 
 # ── PyQt5 ─────────────────────────────────────────────
 from PyQt5.QtWidgets import QApplication
-from PyQt5.QtCore import QObject, pyqtSignal
+from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 
 # ── 日志 ─────────────────────────────────────────────
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -332,8 +332,14 @@ if __name__ == "__main__":
     t = threading.Thread(target=monitor_loop, daemon=True)
     t.start()
 
+    # 让 Python 信号处理器能被触发：每 500ms 交还控制权一次
+    _sigint_timer = QTimer()
+    _sigint_timer.start(500)
+    _sigint_timer.timeout.connect(lambda: None)
+
+    # Ctrl+C → app.quit() → exec_() 返回
+    signal.signal(signal.SIGINT, lambda *_: app.quit())
+
     log.info("Qt 主线程就绪，按 Ctrl+C 退出")
-    try:
-        sys.exit(app.exec_())
-    except KeyboardInterrupt:
-        log.info("退出")
+    sys.exit(app.exec_())
+    log.info("退出")
