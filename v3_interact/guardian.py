@@ -32,6 +32,7 @@ _spec.loader.exec_module(_mod)
 PopupWindow = _mod.PopupWindow
 
 from chat_window import ChatWindow
+from mini_window import MiniWindow
 
 # ── PyQt5 ─────────────────────────────────────────────
 from PyQt5.QtWidgets import QApplication
@@ -84,9 +85,11 @@ DETECT_PROMPT = """\
 # Signal 只传基本类型（str/int），复杂对象通过共享变量传递
 # ════════════════════════════════════════════════════
 class _Bridge(QObject):
-    trigger_popup = pyqtSignal(str)   # token，对应 _pending 里的一条记录
+    trigger_popup  = pyqtSignal(str)        # token，对应 _pending 里的一条记录
+    update_status  = pyqtSignal(str, str)   # (status_key, task_text)
 
 _bridge = _Bridge()
+_mini: "MiniWindow | None" = None          # 常驻小窗，主线程创建后赋值
 _pending: dict[str, dict] = {}        # token → {reason, suggestions, history}
 _open_windows: list = []              # 持有窗口引用，防止被 GC 回收
 
@@ -154,6 +157,7 @@ def _on_trigger_popup(token: str):
         win.show_with_initial()
         _open_windows.append(win)
         _chat_open.set()                              # 暂停监控
+        _bridge.update_status.emit("paused", "对话进行中")
         log.info("[监控] 对话窗已打开，暂停截图")
 
         def on_chat_closed():
@@ -162,6 +166,7 @@ def _on_trigger_popup(token: str):
             save_context(history)                     # 保存上下文
             _last_alert_reset.set()                   # 通知监控循环重置冷却计时器
             _chat_open.clear()                        # 恢复监控
+            _bridge.update_status.emit("monitoring", "恢复监控")
             log.info("[监控] 对话窗已关闭，恢复截图，冷却计时器将重置")
 
         win.window_closed.connect(on_chat_closed)     # closeEvent 触发，不依赖 C++ 销毁
@@ -175,7 +180,12 @@ def _on_trigger_popup(token: str):
     win.destroyed.connect(lambda: _open_windows.remove(win) if win in _open_windows else None)
 
 
+def _on_update_status(key: str, task: str):
+    if _mini:
+        _mini.set_status(key, task)
+
 _bridge.trigger_popup.connect(_on_trigger_popup)
+_bridge.update_status.connect(_on_update_status)
 
 
 # ════════════════════════════════════════════════════
@@ -293,6 +303,7 @@ def monitor_loop():
             if state.get("anomaly"):
                 log.info(f"  ⚠ {state['anomaly']}")
             history.append(state)
+            _bridge.update_status.emit("monitoring", f"[{state['app']}] {state['task']}")
 
         if len(history) > HISTORY_SIZE:
             history.pop(0)
@@ -311,6 +322,7 @@ def monitor_loop():
                     if stuck and conf >= STUCK_CONFIDENCE_THRESHOLD:
                         log.info("[!] 触发弹窗")
                         last_alert = now
+                        _bridge.update_status.emit("alert", result.get("reason", "检测到异常"))
                         token = _make_token()
                         _pending[token] = {
                             "reason":      result.get("reason", "检测到异常"),
@@ -328,6 +340,9 @@ def monitor_loop():
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)   # 关闭弹窗不退出程序
+
+    _mini = MiniWindow()
+    _mini.show()
 
     t = threading.Thread(target=monitor_loop, daemon=True)
     t.start()
