@@ -97,9 +97,3 @@ screen_guardian/
 ├── v2_notify/       PyQt5 弹窗通知
 └── v3_interact/     完整版（弹窗 + 多轮对话，推荐使用）
 ```
-
-## 注意事项
-
-- `QApplication` 必须在主线程创建，不可在子线程调用任何 Qt UI
-- API Key 不要硬编码进代码，通过环境变量传入
-- 截图文件保存在 `C:\temp\sg.png`（WSL2）或系统临时目录，不上传
