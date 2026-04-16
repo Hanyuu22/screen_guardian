@@ -6,10 +6,12 @@ import subprocess, time, json, re, io, base64, hashlib, os, sys, logging, thread
 from datetime import datetime
 from pathlib import Path
 
-# ── 输入法环境变量（必须在 QApplication 之前设置） ────────
-os.environ.setdefault("QT_IM_MODULE", "ibus")
-os.environ.setdefault("XMODIFIERS",   "@im=ibus")
-os.environ.setdefault("GTK_IM_MODULE","ibus")
+# ── 输入法环境变量（Linux/WSL 下在 QApplication 之前设置） ──
+import platform as _platform
+if _platform.system() != "Windows":
+    os.environ.setdefault("QT_IM_MODULE", "ibus")
+    os.environ.setdefault("XMODIFIERS",   "@im=ibus")
+    os.environ.setdefault("GTK_IM_MODULE","ibus")
 
 import requests
 from PIL import Image
@@ -175,8 +177,10 @@ _bridge.trigger_popup.connect(_on_trigger_popup)
 # ════════════════════════════════════════════════════
 def take_screenshot() -> bool:
     try:
+        # Windows 下直接用 powershell，WSL 下用 powershell.exe
+        ps_cmd = "powershell" if _platform.system() == "Windows" else "powershell.exe"
         r = subprocess.run(
-            ["powershell.exe", "-NoProfile", "-Command", PS_SCREENSHOT],
+            [ps_cmd, "-NoProfile", "-Command", PS_SCREENSHOT],
             capture_output=True, timeout=12,
         )
         return r.returncode == 0 and os.path.exists(WSL_READ_PATH)
