@@ -6,13 +6,7 @@ import subprocess, time, json, re, io, base64, hashlib, os, sys, logging, thread
 from datetime import datetime
 from pathlib import Path
 
-# ── 输入法环境变量（Linux/WSL 下在 QApplication 之前设置） ──
 import platform as _platform
-if _platform.system() != "Windows":
-    # xim: 走 X11 原生输入协议，WSLg 下可让 Windows IME 直接透传
-    os.environ.setdefault("QT_IM_MODULE", "xim")
-    os.environ.setdefault("XMODIFIERS",   "@im=ibus")
-    os.environ.setdefault("GTK_IM_MODULE","xim")
 
 import requests
 from PIL import Image
