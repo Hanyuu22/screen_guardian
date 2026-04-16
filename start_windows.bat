@@ -1,56 +1,54 @@
 @echo off
 chcp 65001 >nul
+
 echo ========================================
-echo  Screen Guardian - Windows 启动器
-echo  中文输入支持版
+echo  Screen Guardian - Windows Launcher
 echo ========================================
 echo.
 
-:: 检查 API Key
+:: Check API Key
 if "%DASHSCOPE_API_KEY%"=="" (
-    echo [错误] 未设置 DASHSCOPE_API_KEY
+    echo [ERROR] DASHSCOPE_API_KEY is not set.
     echo.
-    echo 请先在 PowerShell 中运行：
-    echo   $env:DASHSCOPE_API_KEY = "sk-你的key"
+    echo Please set it first in PowerShell:
+    echo   $env:DASHSCOPE_API_KEY = "sk-your-key"
     echo.
-    echo 或永久设置（系统环境变量）：
-    echo   控制面板 ^> 系统 ^> 高级系统设置 ^> 环境变量
+    echo Or set it permanently in:
+    echo   Control Panel - System - Advanced - Environment Variables
     echo.
     pause
     exit /b 1
 )
 
-:: 检查 Windows Python
+:: Check Python
 python --version >nul 2>&1
 if errorlevel 1 (
-    echo [错误] 未找到 Windows Python
-    echo 请从 https://python.org 安装 Python 3.10+
+    echo [ERROR] Python not found.
+    echo Please install Python 3.10+ from https://python.org
     pause
     exit /b 1
 )
 
-:: 检查并安装依赖
-echo 检查依赖...
+:: Install dependencies if missing
 python -c "import PyQt5, requests, PIL" >nul 2>&1
 if errorlevel 1 (
-    echo 正在安装依赖（首次运行）...
+    echo Installing dependencies...
     pip install PyQt5 requests Pillow
     if errorlevel 1 (
-        echo [错误] 依赖安装失败，请手动运行：
-        echo   pip install PyQt5 requests Pillow
+        echo [ERROR] Failed to install dependencies.
+        echo Please run manually: pip install PyQt5 requests Pillow
         pause
         exit /b 1
     )
 )
 
-:: 设置项目路径（UNC 路径访问 WSL）
-set PROJECT=\\wsl.localhost\Ubuntu-22.04\home\hanyuu\screen_guardian
-
-echo 启动 Screen Guardian...
-echo （中文输入：使用系统输入法，正常切换即可）
+:: Get script directory and launch
+set PROJECT=%~dp0
+echo Starting Screen Guardian...
+echo Chinese input: use Windows IME normally (Win+Space or Shift)
 echo.
-python "%PROJECT%\v3_interact\guardian.py"
+python "%PROJECT%v3_interact\guardian.py"
 
 echo.
-echo 程序已退出。
+echo Exited.
 pause
