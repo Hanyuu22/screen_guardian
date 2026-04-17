@@ -1,5 +1,19 @@
 # Changelog
 
+## [v0.4.1] - 2026-04-16 22:00
+### 修复
+- WSLg 中文输入法三项根因修复：
+  1. `enable-by-default: true` — ibus 在每个窗口自动激活，无需手动按快捷键
+  2. 触发快捷键改为 `Ctrl+Space`（原 `Super+Space` 在 WSLg 被 Windows 语言切换拦截）
+  3. `run.sh` 与 `guardian.py` 启动时均调用 `ibus engine libpinyin`，防止 daemon 重启后引擎重置为英文键盘
+- `.gitignore` 加入 `NOTES.md`（开发私人笔记）
+
+### 技术备注
+- dconf 在 WSLg 下无法通过 `gsettings` 直接写入（无 dconf-service），
+  改用系统 `python3 + gi.repository.Gio` 绕过限制完成配置持久化
+
+---
+
 ## [v0.4.0] - 2026-04-16
 ### 修复
 - QApplication 移至主线程，解决子线程创建 Qt 导致的 Segmentation fault
